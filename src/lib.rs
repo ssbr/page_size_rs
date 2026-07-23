@@ -25,12 +25,12 @@
 #[cfg(feature = "no_std")]
 extern crate spin;
 #[cfg(feature = "no_std")]
-use spin::Once;
+use spin::LazyLock;
 
 #[cfg(not(feature = "no_std"))]
 extern crate std;
 #[cfg(not(feature = "no_std"))]
-use std::sync::Once;
+use std::sync::LazyLock;
 
 #[cfg(unix)]
 extern crate libc;
@@ -47,120 +47,50 @@ extern crate winapi;
 /// println!("{}", page_size::get());
 /// ```
 pub fn get() -> usize {
-    get_helper()
+    static PAGE_SIZE: LazyLock<usize> = LazyLock::new(os::get);
+    *PAGE_SIZE
 }
 
-/// This function retrieves the system's memory allocation granularity.
-///
-/// # Example
-///
-/// ```rust
-/// extern crate page_size;
-/// println!("{}", page_size::get_granularity());
-/// ```
-pub fn get_granularity() -> usize {
-    get_granularity_helper()
-}
+pub use os::get_granularity;
 
 // Unix Section
-
-#[cfg(all(unix, feature = "no_std"))]
-#[inline]
-fn get_helper() -> usize {
-    static INIT: Once<usize> = Once::new();
-
-    *INIT.call_once(unix::get)
-}
-
-#[cfg(all(unix, not(feature = "no_std")))]
-#[inline]
-fn get_helper() -> usize {
-    static INIT: Once = Once::new();
-    static mut PAGE_SIZE: usize = 0;
-
-    unsafe {
-        INIT.call_once(|| PAGE_SIZE = unix::get());
-        PAGE_SIZE
-    }
-}
-
-// Unix does not have a specific allocation granularity.
-// The page size works well.
 #[cfg(unix)]
-#[inline]
-fn get_granularity_helper() -> usize {
-    get_helper()
-}
-
-#[cfg(unix)]
-mod unix {
+mod os {
     use libc::{sysconf, _SC_PAGESIZE};
 
     #[inline]
     pub fn get() -> usize {
         unsafe { sysconf(_SC_PAGESIZE) as usize }
     }
+
+    // Unix does not have a specific allocation granularity.
+    // The page size works well.
+    #[inline]
+    pub fn get_granularity() -> usize {
+        get()
+    }
 }
 
 // WebAssembly section
-
-// WebAssembly does not have a specific allocation granularity.
-// The page size works well.
 #[cfg(all(not(target_os = "emscripten"), any(target_arch = "wasm32", target_arch = "wasm64")))]
-#[inline]
-fn get_granularity_helper() -> usize {
-    // <https://webassembly.github.io/spec/core/exec/runtime.html#page-size>
-    65536
+mod os {
+    #[inline]
+    pub fn get() -> usize {
+        4096
+    }
+    // WebAssembly does not have a specific allocation granularity.
+    // The "page size" works well.
+    #[inline]
+    pub fn get_granularity() -> usize {
+        65536 // <https://webassembly.github.io/spec/core/exec/runtime.html#page-size>
+    }
 }
 
 // Windows Section
-
-#[cfg(all(windows, feature = "no_std"))]
-#[inline]
-fn get_helper() -> usize {
-    static INIT: Once<usize> = Once::new();
-
-    *INIT.call_once(windows::get)
-}
-
-#[cfg(all(windows, not(feature = "no_std")))]
-#[inline]
-fn get_helper() -> usize {
-    static INIT: Once = Once::new();
-    static mut PAGE_SIZE: usize = 0;
-
-    unsafe {
-        INIT.call_once(|| PAGE_SIZE = windows::get());
-        PAGE_SIZE
-    }
-}
-
-#[cfg(all(windows, feature = "no_std"))]
-#[inline]
-fn get_granularity_helper() -> usize {
-    static GRINIT: Once<usize> = Once::new();
-
-    *GRINIT.call_once(windows::get_granularity)
-}
-
-#[cfg(all(windows, not(feature = "no_std")))]
-#[inline]
-fn get_granularity_helper() -> usize {
-    static GRINIT: Once = Once::new();
-    static mut GRANULARITY: usize = 0;
-
-    unsafe {
-        GRINIT.call_once(|| GRANULARITY = windows::get_granularity());
-        GRANULARITY
-    }
-}
-
 #[cfg(windows)]
-mod windows {
-    #[cfg(feature = "no_std")]
+mod os {
     use core::mem;
-    #[cfg(not(feature = "no_std"))]
-    use std::mem;
+    use super::LazyLock;
 
     use winapi::um::sysinfoapi::GetSystemInfo;
     use winapi::um::sysinfoapi::{LPSYSTEM_INFO, SYSTEM_INFO};
@@ -177,21 +107,28 @@ mod windows {
 
     #[inline]
     pub fn get_granularity() -> usize {
-        unsafe {
+        static GRANULARITY: LazyLock<usize> = LazyLock::new(|| unsafe {
             let mut info: SYSTEM_INFO = mem::zeroed();
             GetSystemInfo(&mut info as LPSYSTEM_INFO);
 
             info.dwAllocationGranularity as usize
-        }
+        });
+        *GRANULARITY
     }
 }
 
 // Stub Section
 
-#[cfg(not(any(unix, windows)))]
-#[inline]
-fn get_helper() -> usize {
-    4096 // 4k is the default on many systems
+#[cfg(not(any(unix, windows, target_arch = "wasm32", target_arch = "wasm64")))]
+mod os {
+    #[inline]
+    pub fn get() -> usize {
+        4096 // 4k is the default on many systems
+    }
+    #[inline]
+    pub fn get_granularity() -> usize {
+        get()
+    }
 }
 
 #[cfg(test)]
@@ -200,13 +137,11 @@ mod tests {
 
     #[test]
     fn test_get() {
-        #[allow(unused_variables)]
-        let page_size = get();
+        let _page_size = get();
     }
 
     #[test]
     fn test_get_granularity() {
-        #[allow(unused_variables)]
-        let granularity = get_granularity();
+        let _granularity = get_granularity();
     }
 }
